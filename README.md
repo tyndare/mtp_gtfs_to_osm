@@ -27,3 +27,5 @@ usage:
 
         ./add-line.py stops.om 115
 
+    6) Edit stops.osm in JOSM and fix any generated TODO
+
