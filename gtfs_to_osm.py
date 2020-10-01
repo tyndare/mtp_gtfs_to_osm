@@ -23,6 +23,21 @@ Extract some GTFS info to help integrate them in OpenStreetMap
 MIN_DATE=datetime.date.today()
 MAX_DATE=MIN_DATE + datetime.timedelta(days=14)
 
+REF_ATTRIBUTE_OF_AGENCY = {
+    "Tisséo" : "ref:FR:Tisséo",
+    "HAUTE-GARONNE" : "ref:FR:aec31",
+}
+SOURCE_ATTRIBUTE_OF_AGENCY = {
+    "Tisséo" : "Tisséo",
+    "HAUTE-GARONNE" : "Conseil Départemental de Haute-Garonne",
+}
+
+NETWORK_OF_AGENCY = {
+    "HAUTE-GARONNE" : "Réseau Arc-en-Ciel",
+    "Tisséo" : "fr_tisseo",
+    "TAM": "TaM",
+}
+
 week_days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 class MyGTFS(object):
@@ -37,7 +52,11 @@ class MyGTFS(object):
         self.routes = {route.route_id : route for route in parse_csv(open_file("routes.txt"), "Route")}
         self.trips = {trip.trip_id : trip for trip in parse_csv(open_file("trips.txt"), "Trip")}
         self.stop_times = parse_csv(open_file("stop_times.txt"), "StopTime")
-        self.services = {service.service_id : service for service in parse_csv(open_file("calendar.txt"), "Calendar")}
+        try:
+            self.services = {service.service_id : service for service in parse_csv(open_file("calendar.txt"), "Calendar")}
+        except Exception as e:
+            print(e)
+            self.services = {}
         self.agency = {agency.agency_id : agency for agency in parse_csv(open_file("agency.txt"), "Agency")}
         self.shapes = {}
         try:
@@ -119,18 +138,28 @@ class MyGTFS(object):
             for trip_id in self.trips_by_list_of_stops[list_of_stops]]))
 
     def get_start_date_from_list_of_stops(self, list_of_stops):
-        services_list = [self.services[sid] for sid in self.get_services_ids_from_list_of_stops(list_of_stops)]
-        return min([parse_date(service.start_date) for service in services_list])
+        services_list = [self.services[sid] for sid in self.get_services_ids_from_list_of_stops(list_of_stops) if sid in self.services]
+        if len(services_list):
+            return min([parse_date(service.start_date) for service in services_list])
+        else:
+            return datetime.date.today()
 
     def get_end_date_from_list_of_stops(self, list_of_stops):
-        services_list = [self.services[sid] for sid in self.get_services_ids_from_list_of_stops(list_of_stops)]
-        return max([parse_date(service.start_date) for service in services_list])
+        services_list = [self.services[sid] for sid in self.get_services_ids_from_list_of_stops(list_of_stops) if sid in self.services]
+        if len(services_list):
+            return max([parse_date(service.start_date) for service in services_list])
+        else:
+            return datetime.date.today()
 
     def is_trip_serviced_on_day(self, trip_id, day, start_date=MIN_DATE, end_date=MAX_DATE):
-        service = self.services[self.trips[trip_id].service_id]
-        return (getattr(service, day)) == "1" \
-            and parse_date(service.start_date) <= end_date \
-            and parse_date(service.end_date) >= start_date
+        service_id = self.trips[trip_id].service_id
+        if service_id in self.services:
+            service = self.services[self.trips[trip_id].service_id]
+            return (getattr(service, day)) == "1" \
+                and parse_date(service.start_date) <= end_date \
+                and parse_date(service.end_date) >= start_date
+        else:
+            return True
 
     def get_duration_from_list_of_stops(self, list_of_stops, date=None):
         durations = []
@@ -263,9 +292,9 @@ class MyGTFS(object):
             osm_name = osm_name + only_to + self.stops[list_of_stops[-1]].stop_name
         else:
             osm_name = osm_name \
-                + self.stops[list_of_stops[0]].stop_name \
+                + (self.stops[list_of_stops[0]].stop_name if list_of_stops[0] in self.stops else "?")\
                 + " → " \
-                + self.stops[list_of_stops[-1]].stop_name
+                + (self.stops[list_of_stops[-1]].stop_name if list_of_stops[-1] in self.stops else "?")
         return osm_name
 
 route_type_name = {
@@ -318,8 +347,12 @@ def parse_date(date_str):
     )
 
 def parse_time(time_str):
-    hours, minutes, seconds = map(int, time_str.split(":"))
-    return datetime.timedelta(hours=hours, minutes=minutes, seconds=seconds)
+    if time_str:
+        hours, minutes, seconds = map(int, time_str.split(":"))
+        return datetime.timedelta(hours=hours, minutes=minutes, seconds=seconds)
+    else:
+        return datetime.timedelta(hours=0, minutes=0, seconds=0)
+
 
 def format_time(timedelta):
     hours = timedelta.seconds // 3600
@@ -331,7 +364,7 @@ def format_date(date):
     return "{:04d}-{:02d}-{:02d}".format(date.year, date.month, date.day)
 
 
-def write_osm_pseudo_ways(gtfs, osm_filename):
+def write_osm_pseudo_ways(gtfs, agency, osm_filename):
     print("write " + osm_filename)
     f = open(osm_filename, "w")
 
@@ -352,11 +385,12 @@ def write_osm_pseudo_ways(gtfs, osm_filename):
         f.write('    <tag k="highway" v="bus_stop" />\n')
         f.write('    <tag k="public_transport" v="platform" />\n')
         f.write('    <tag k="bus" v="yes" />\n')
-        f.write('    <tag k="source" v="https://data.toulouse-metropole.fr/explore/dataset/tisseo-gtfs/information/" />\n')
-        f.write('    <tag k="source:date" v="2020-09-06" />\n')
+        f.write('    <tag k="source" v="{0}" />\n'.format(SOURCE_ATTRIBUTE_OF_AGENCY.get(agency.agency_name,"")))
+        f.write('    <tag k="source:date" v="{0}" />\n'.format(MIN_DATE))
         f.write('    <tag k="name" v="{0}" />\n'.format(stop.stop_name.replace('"','')))
+        f.write('    <tag k="stop_id" v="{0}" />\n'.format(stop.stop_id))
         f.write('    <tag k="ref" v="{0}" />\n'.format(stop.stop_code))
-        f.write('    <tag k="ref:FR:Tisséo" v="{0}" />\n'.format(stop.stop_code))
+        f.write('    <tag k="{0}" v="{1}" />\n'.format(REF_ATTRIBUTE_OF_AGENCY.get(agency.agency_name, "ref"), stop.stop_code))
         f.write("  </node>\n")
         #stop_pos_lon=str(stop.stop_lon)
         #stop_pos_lat=str(float(stop.stop_lat)+ 0.00001)
@@ -436,36 +470,69 @@ def write_osm_pseudo_ways(gtfs, osm_filename):
         if way_open:
             f.write("  </way>\n")
 
+    route_master_routes = defaultdict(list)
+    route_master_name = {}
+    route_master_tag = {}
+    route_master_agency = {}
     for list_of_stops in gtfs.all_lists_of_stops:
         id_count = id_count - 1
+        ref = gtfs.get_ref_from_list_of_stops(list_of_stops)
         route_type = gtfs.get_route_type(list_of_stops)
+        route_name = gtfs.get_osm_name_from_list_of_stops(list_of_stops)
+        route_tag = route_type_route_tag[route_type]
+        official_name = gtfs.get_name_from_list_of_stops(list_of_stops)
+        route_master_name[ref] = route_name.split(":")[0] + ": " + official_name
+        route_master_tag[ref] = route_tag
+        route_master_agency[ref] = gtfs.get_agency(list_of_stops)
+        route_master_routes[ref].append(id_count)
         interval, interval_conditional = gtfs.get_interval_from_list_of_stops(list_of_stops)
         f.write("  <relation id='{0}' action='modify' visible='true'>\n".format(id_count))
-        f.write('    <tag k="name" v="{0}" />\n'.format(gtfs.get_osm_name_from_list_of_stops(list_of_stops)))
-        f.write('    <tag k="official_name" v="{0}" />\n'.format(gtfs.get_name_from_list_of_stops(list_of_stops)))
+        f.write('    <tag k="name" v="{0}" />\n'.format(route_name))
+        f.write('    <tag k="official_name" v="{0}" />\n'.format(official_name))
         f.write('    <tag k="description" v="{0}" />\n'.format(gtfs.get_headsign_from_list_of_stops(list_of_stops)))
-        f.write('    <tag k="ref" v="{0}" />\n'.format(gtfs.get_ref_from_list_of_stops(list_of_stops)))
+        f.write('    <tag k="ref" v="{0}" />\n'.format(ref))
         f.write('    <tag k="type" v="route" />\n')
-        f.write('    <tag k="route" v="{0}" />\n'.format(route_type_route_tag[route_type]))
+        f.write('    <tag k="route" v="{0}" />\n'.format(route_tag))
         f.write('    <tag k="oneway" v="yes" />\n')
         f.write('    <tag k="duration" v="{0}" />\n'.format(gtfs.get_duration_from_list_of_stops(list_of_stops)))
         f.write('    <tag k="start_date" v="{0}" />\n'.format(format_date(gtfs.get_start_date_from_list_of_stops(list_of_stops))))
         f.write('    <tag k="end_date" v="{0}" />\n'.format(format_date(gtfs.get_end_date_from_list_of_stops(list_of_stops))))
         f.write('    <tag k="operator" v="{0}" />\n'.format(gtfs.get_agency(list_of_stops)))
+        f.write('    <tag k="public_transport:version" v="2" />\n')
+        missing_stops = []
         if interval:
             f.write('    <tag k="interval" v="{0}" />\n'.format(interval))
         if interval_conditional:
             f.write('    <tag k="interval" v="{0}" />\n'.format(interval_conditional))
         f.write('    <tag k="opening_hours" v="{0}" />\n'.format(gtfs.get_opening_hours_from_list_of_stops(list_of_stops)))
         for stop_id in list_of_stops:
-            f.write("    <member type='node' role='platform' ref='{0}' />\n".format(stop_osm_id[stop_id]))
+            if stop_id in stop_osm_id:
+                f.write("    <member type='node' role='platform' ref='{0}' />\n".format(stop_osm_id[stop_id]))
+            else:
+                missing_stops.append(stop_id)
+                print("ERROR: stop_id " + stop_id + " referenced but not found in GTFS stops.txt")
         try:
             for shape_id in set([gtfs.trips[trip_id].shape_id for trip_id in gtfs.trips_by_list_of_stops[list_of_stops]]):
                 for way_id in way_ids_by_shape_id[shape_id]:
                     f.write("    <member type='way' role='' ref='{0}' />\n".format(way_id))
         except:
             pass
+        if missing_stops:
+            f.write('    <tag k="fixme" v="{0}" />\n'.format("missing stops " + " ".join(missing_stops)))
         f.write("  </relation>\n")
+
+    for ref, name in route_master_name.items():
+        id_count = id_count - 1
+        f.write("  <relation id='{0}' action='modify' visible='true'>\n".format(id_count))
+        f.write('    <tag k="type" v="route_master" />\n')
+        f.write('    <tag k="route_master" v="{0}" />\n'.format(route_master_tag[ref]))
+        f.write('    <tag k="name" v="{0}" />\n'.format(name))
+        f.write('    <tag k="ref" v="{0}" />\n'.format(ref))
+        f.write('    <tag k="operator" v="{0}" />\n'.format(route_master_agency[ref]))
+        for route_id in route_master_routes[ref]:
+            f.write("    <member type='relation' role='' ref='{0}' />\n".format(route_id))
+        f.write("  </relation>\n")
+
 
 
 
@@ -493,5 +560,5 @@ if __name__ == '__main__':
         path = "."
     gtfs = MyGTFS(path)
     osm_filename = "-".join([agency.agency_name for agency in gtfs.agency.values()]) + ".osm"
-    write_osm_pseudo_ways(gtfs, osm_filename)
+    write_osm_pseudo_ways(gtfs, list(gtfs.agency.values())[0], osm_filename)
 

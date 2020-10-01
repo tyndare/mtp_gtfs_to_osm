@@ -15,20 +15,6 @@ import gtfs_to_osm
 from osm import OsmParser,OsmWriter,Node,Relation,Way
 
 
-REF_ATTRIBUTE_OF_AGENCY = {
-    "Tisséo" : "ref:FR:Tisséo",
-    "HAUTE-GARONNE" : "ref:FR:aec31",
-}
-SOURCE_ATTRIBUTE_OF_AGENCY = {
-    "Tisséo" : "Tisséo",
-    "HAUTE-GARONNE" : "Conseil Départemental de Haute-Garonne",
-}
-
-NETWORK_OF_AGENCY = {
-    "HAUTE-GARONNE" : "Réseau Arc-en-Ciel",
-    "Tisséo" : "fr_tisseo",
-    "TAM": "TaM",
-}
 
 CHANGE_NAME = [
     ("Eglise", "Église"),
@@ -57,6 +43,10 @@ def format_relation_name(route, stop_list, agency):
             + format_stop_name(stop_list[0].stop_name, route.route_type, agency) \
             + " → " \
             + format_stop_name(stop_list[-1].stop_name, route.route_type, agency)
+
+def format_route_master_name(route):
+    prefix = gtfs_to_osm.route_type_name[route.route_type]
+    return prefix + " " + route.route_short_name + ": "  + route.route_long_name
 
 def usage():
     print("USAGE:", sys.argv[0], "osm-stops.osm")
@@ -197,7 +187,7 @@ def get_or_add_stops_by_ref(osm_data, stop_list, all_stops, ref_attribute, route
                     "public_transport": "platform",
                     route_tag: "yes",
                     ref_attribute: ref,
-                    "source:" + ref_attribute: SOURCE_ATTRIBUTE_OF_AGENCY.get(agency,""),
+                    "source:" + ref_attribute: gtfs_to_osm.SOURCE_ATTRIBUTE_OF_AGENCY.get(agency,""),
                     "fixme": "TODO: arrêt importé à fusionner si déjà existante et/ou à vérifier",
                 })
             if stop.wheelchair_boarding == "1":
@@ -214,7 +204,7 @@ def add_trip(gtfs, trip, route, list_of_stops_id, osm_data, start_date, end_date
     agency = gtfs.agency[route.agency_id].agency_name
     name = format_relation_name(route, stop_list, agency)
     print("add trip", name)
-    ref_attribute = REF_ATTRIBUTE_OF_AGENCY.get(agency, "ref")
+    ref_attribute = gtfs_to_osm.REF_ATTRIBUTE_OF_AGENCY.get(agency, "ref")
     duration = gtfs.get_duration_from_list_of_stops(list_of_stops_id)
     interval = gtfs.get_interval_from_list_of_stops(list_of_stops_id, start_date=start_date, end_date=end_date)
     opening_hours = gtfs.get_opening_hours_from_list_of_stops(list_of_stops_id, start_date=start_date, end_date=end_date)
@@ -239,10 +229,11 @@ def add_trip(gtfs, trip, route, list_of_stops_id, osm_data, start_date, end_date
             "from" : osm_stop_by_ref[stop_list[0].stop_code].tags.get("name",""),
             "to" : osm_stop_by_ref[stop_list[-1].stop_code].tags.get("name",""),
         })
-    if NETWORK_OF_AGENCY.get(agency):
-        rel.tags["network"] = NETWORK_OF_AGENCY[agency]
+    if gtfs_to_osm.NETWORK_OF_AGENCY.get(agency):
+        rel.tags["network"] = gtfs_to_osm.NETWORK_OF_AGENCY[agency]
     for stop in stop_list:
         rel.add_member(osm_stop_by_ref[stop.stop_code], "platform")
+    return rel
 
 def trip_comparison_key(gtfs, list_of_stops):
     return (
@@ -253,6 +244,8 @@ def add_line(gtfs, osm_data, line_ref, date):
     found = False
     start_date = date
     end_date = date + datetime.timedelta(days=7)
+    routes_master_members = []
+    route_master = None
     for list_of_stops in sorted(gtfs.all_lists_of_stops, key=lambda s: trip_comparison_key(gtfs,s), reverse=True):
         if ((gtfs.get_end_date_from_list_of_stops(list_of_stops) >= start_date)
                 and (gtfs.get_start_date_from_list_of_stops(list_of_stops) <= end_date)):
@@ -261,8 +254,24 @@ def add_line(gtfs, osm_data, line_ref, date):
             route = gtfs.routes[trip.route_id]
             if route.route_short_name == line_ref:
                 found = True
-                add_trip(gtfs, trip, route, list_of_stops, osm_data, start_date, end_date)
-    if not found:
+                route_master = route
+                rel = add_trip(gtfs, trip, route, list_of_stops, osm_data, start_date, end_date)
+                routes_master_members.append(rel)
+    if found:
+        rel = osm_data.create_relation(
+            attrs={ "action":"modify"},
+            tags={
+                "name":format_route_master_name(route_master),
+                "type":"route_master",
+                "route_master": gtfs_to_osm.route_type_route_tag[route_master.route_type],
+                "colour": "#" + route_master.route_color.upper(),
+                "ref": route_master.route_short_name,
+                "public_transport:version" : "2",
+                "fixme": "TODO: route_master importée à fusionner si déjà existante et/ou à vérifier",
+            })
+        for route_rel in routes_master_members:
+            rel.add_member(route_rel, "")
+    else:
         print("ERROR: no trip found with short_name =", line_ref, "at date", str(date))
         sys.exit(-1)
 
